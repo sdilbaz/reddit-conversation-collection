@@ -2,7 +2,7 @@
 """
 Created on Wed Jul 10 21:00:58 2019
 
-@author: User
+@author: Serdarcan Dilbaz
 """
 
 import praw
@@ -10,19 +10,14 @@ from praw.models import MoreComments
 import pandas as pd
 import datetime as dt
 import json
-from urllib.request import urlopen
-from urllib.request import build_opener
+from urllib.request import urlopen, build_opener
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 import time
+import os
 
 def single_node(comment):
-    if comment.depth:
-        reply_type="reply"
-    else:
-        reply_type="comment"
-    sub_tree=ET.Element(reply_type)
-    
+    sub_tree=ET.Element("response")
     try:
         if not comment.score_hidden:
             comment_score=comment.score
@@ -30,7 +25,7 @@ def single_node(comment):
     except:
         pass
     try:
-        commenter_username=author.name
+        commenter_username=comment.author.name
         ET.SubElement(sub_tree,"username").text=commenter_username
     except:
         pass
@@ -42,8 +37,7 @@ def single_node(comment):
         pass
     try:
         comment_id=comment.id
-        ET.SubElement(sub_tree,reply_type+"_id").text=comment_id
-        
+        ET.SubElement(sub_tree,"response_id").text=comment_id
     except:
         pass
     try:
@@ -55,19 +49,26 @@ def single_node(comment):
 
 
 def generate_tree(comment):
-    if comment._replies:
-        sub_tree=single_node(comment)
-        for reply in comment._replies:
-            ET.SubElement(sub_tree,"response").insert(0,generate_tree(reply))    
-        return sub_tree
-    else:
+    try:
+        if comment.ups<3:
+            return None
+    except:
+        return None
+    comment=comment.refresh()
+    if comment._replies is None:
         return single_node(comment)
-        
-    
-if not os.path.isfile("subreddit-list.txt"):
+    else:
+        sub_tree=single_node(comment)        
+        for reply in comment.replies:
+            reply_tree=generate_tree(reddit.comment(reply))
+            if not reply_tree is None:
+                sub_tree.insert(-1,reply_tree)    
+        return sub_tree
 
-    subreddits=[]
-    
+        
+     
+if not os.path.isfile("subreddit-list.txt"):
+    subreddits=[]    
     opener = build_opener()
     
     main_url="http://redditlist.com/sfw"
@@ -78,14 +79,10 @@ if not os.path.isfile("subreddit-list.txt"):
     
     mydivs = soup.findAll("div", {"class": "listing-item"})
     for div in mydivs[int(len(mydivs)/3):-int(len(mydivs)/3)]:
-    #    href=str(div)
-    #    href=href[href.find('href')+6:]
-    #    href=href[:href.find('"')]
-    #    subreddits[div.attrs['data-target-subreddit']]=href
         subreddits.append(div.attrs['data-target-subreddit'])
         
     for page_no in range(2,32):
-        print(page_no)
+#        print(page_no)
         
         main_url="http://redditlist.com/sfw?page="+str(page_no)
         response=opener.open(main_url)
@@ -104,7 +101,7 @@ else:
     with open("subreddit-list.txt","r") as file:
         subreddits=file.read().split('\n')
 
-with open("reddit-credentials.json", "r") as file:
+with open(r"D:\Conversation_Code\reddit-credentials.json", "r") as file:
     creds = json.load(file)
 client_id=creds['client_id'],
 client_secret=creds['client_secret'],
@@ -118,10 +115,9 @@ reddit = praw.Reddit(client_id=creds['client_id'],
                      username=creds['username'],
                      password=creds['password'])
 
-possible_chars=set()
 for subr in subreddits:
     subreddit = reddit.subreddit(subr)
-    top_subreddit = subreddit.top(limit=1000000)
+    top_subreddit = subreddit.top(limit=None)
     for submission in top_subreddit:
         root = ET.Element("submission")
         try:
@@ -149,19 +145,16 @@ for subr in subreddits:
             ET.SubElement(root,"post_time").text=post_time
         except:
             pass
-
         try:
             post_score=submission.score
             ET.SubElement(root,"post_score").text=str(post_score)
         except:
             pass
-
         try:
             post_title=submission.title
             ET.SubElement(root,"post_title").text=post_title
         except:
             pass
-
         try:
             post_upvote_ratio=submission.upvote_ratio
             ET.SubElement(root,"post_upvote_ratio").text=str(post_upvote_ratio)
@@ -172,36 +165,19 @@ for subr in subreddits:
             ET.SubElement(root,"post_body").text=post_body
         except:
             pass
-        
-        expanded_comments=True
-        while expanded_comments:
-            expanded_comments=submission.comments.replace_more(limit=0)
 
+        print('Adding more comments')
+        submission.comments.replace_more(limit=256)#None)
+        print('Added more comments')
 
         for comment in submission.comments:
             if comment.stickied or isinstance(comment, MoreComments):
                 continue
-            ET.SubElement(root,"response").insert(0,generate_tree(comment))    
+            generated=generate_tree(comment)
+            if not generated is None:
+                root.insert(-1,generate_tree(comment))
             
         tree = ET.ElementTree(root)
-        tree.write("test.xml")
-        break
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        tree.write(submission.id+".xml")
 
 
