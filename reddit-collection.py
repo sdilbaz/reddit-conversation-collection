@@ -13,9 +13,11 @@ from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
 import time
 import os
+import glob
 from multiprocessing import Process, Manager
+import argparse
+from argparse import RawTextHelpFormatter
 
-depth_limit=10
 
 def single_node(comment):
     sub_tree=ET.Element("response")
@@ -49,7 +51,7 @@ def single_node(comment):
     return sub_tree
 
 
-def generate_tree(comment):
+def generate_tree(comment,depth_limit):
     try:
         if comment.ups<3:
             return None
@@ -63,7 +65,7 @@ def generate_tree(comment):
     else:
         sub_tree=single_node(comment)        
         for reply in comment.replies:
-            reply_tree=generate_tree(reply)
+            reply_tree=generate_tree(reply,depth_limit)
             if not reply_tree is None:
                 sub_tree.insert(-1,reply_tree)    
         return sub_tree
@@ -86,9 +88,7 @@ def retrieve_subreddit_list():
         for div in mydivs[int(len(mydivs)/3):-int(len(mydivs)/3)]:
             subreddits.append(div.attrs['data-target-subreddit'])
             
-        for page_no in range(2,32):
-    #        print(page_no)
-            
+        for page_no in range(2,32):            
             main_url="http://redditlist.com/sfw?page="+str(page_no)
             response=opener.open(main_url)
             
@@ -104,132 +104,178 @@ def retrieve_subreddit_list():
     
     return subreddits
 
-def explore_submission(cred_id,mlist):
-    while len(mlist):
-        subm_id=mlist.pop()
-        print(subm_id)
-        with open(r"D:\Conversation_Code\credentials\reddit-credentials-"+str(cred_id)+".json", "r") as file:
-            creds = json.load(file)
-    
-        reddit = praw.Reddit(client_id=creds['client_id'],
-                         client_secret=creds['client_secret'],
-                         user_agent=creds['user_agent'],
-                         username=creds['username'],
-                         password=creds['password'])
-        
-        submission=reddit.submission(id=subm_id)
-        
-        root = ET.Element("submission")
-        try:
-            author=submission.author
-            poster_username=author.name
-            ET.SubElement(root,"poster_username").text=poster_username
-        except:
-            pass
-        try:
-            post_link=submission.permalink
-            ET.SubElement(root,"post_link").text=post_link
-        except:
-            pass
-        try:
-            post_subreddit=submission.subreddit.display_name
-            ET.SubElement(root,"post_subreddit").text=post_subreddit
-        except:
-            pass
-        try:
-            if not submission.edited:
-                post_time=time.ctime(submission.created)
-            else:
-                post_time=time.ctime(submission.edited)
-            ET.SubElement(root,"post_time").text=post_time
-        except:
-            pass
-        try:
-            post_score=submission.score
-            ET.SubElement(root,"post_score").text=str(post_score)
-        except:
-            pass
-        try:
-            post_title=submission.title
-            ET.SubElement(root,"post_title").text=post_title
-        except:
-            pass
-        try:
-            post_upvote_ratio=submission.upvote_ratio
-            ET.SubElement(root,"post_upvote_ratio").text=str(post_upvote_ratio)
-        except:
-            pass
-        try:
-            post_body=submission.selftext
-            ET.SubElement(root,"post_body").text=post_body
-        except:
-            pass
-    
-        print('Adding more comments')
-        submission.comments.replace_more(limit=256)#None)
-        print('Added more comments')
-    
-        for comment in submission.comments:
-            if comment.stickied or isinstance(comment, MoreComments):
-                continue
-            generated=generate_tree(comment)
-            if not generated is None:
-                root.insert(-1,generated)
-            
-        tree = ET.ElementTree(root)
-        tree.write(submission.id+".xml")
-
-def list_subm(cred_id,subreddit_list,mlist):
+def subm_from_subreddit(subreddit_list,sub_list_dir,json_loc):
     while len(subreddit_list):
-        subr=subreddit_list.pop()
-        print(subr)
-        with open(r"D:\Conversation_Code\credentials\reddit-credentials-"+str(cred_id)+".json", "r") as file:
-            creds = json.load(file)
-    
-        reddit = praw.Reddit(client_id=creds['client_id'],
-                         client_secret=creds['client_secret'],
-                         user_agent=creds['user_agent'],
-                         username=creds['username'],
-                         password=creds['password'])
+        subreddit=subreddit_list.pop()
+        list_loc=os.path.join(sub_list_dir,subreddit+".txt")
+        if not os.path.isfile(list_loc):
+            with open(json_loc, "r") as file:
+                creds = json.load(file)
+            
+            reddit = praw.Reddit(client_id=creds['client_id'],
+                             client_secret=creds['client_secret'],
+                             user_agent=creds['user_agent'],
+                             username=creds['username'],
+                             password=creds['password'])
+            
+            subreddit = reddit.subreddit(subreddit)
+            top_subreddit = subreddit.top(limit=None)
+            with open(list_loc,"w") as file:
+                for submission in top_subreddit:
+                    file.write(submission.id+"\n")
         
-        subreddit = reddit.subreddit(subr)
-        top_subreddit = subreddit.top(limit=None)
-        for submission in top_subreddit:
-            mlist.append(submission)
+def save_convs(subreddit_list,json_loc,saving_dir,depth_limit):
+    while len(subreddit_list):
+        subreddit=subreddit_list.pop()
+        subreddit_conv_dir=os.path.join(saving_dir,"conversations",subreddit)
+        if not os.path.isdir(subreddit_conv_dir):
+            os.mkdir(subreddit_conv_dir, exist_ok=True)
+        
+        file=open(os.path.join(saving_dir,"submissions"),"r")
+        subm_id=file.readline().strip()
+        while subm_id:
+            if not os.path.isfile(os.path.join(saving_dir,"conversations",subm_id+".xml")):
+                with open(json_loc, "r") as file:
+                    creds = json.load(file)
+            
+                reddit = praw.Reddit(client_id=creds['client_id'],
+                                 client_secret=creds['client_secret'],
+                                 user_agent=creds['user_agent'],
+                                 username=creds['username'],
+                                 password=creds['password'])
+                
+                submission=reddit.submission(id=subm_id)
+                
+                root = ET.Element("submission")
+                try:
+                    author=submission.author
+                    poster_username=author.name
+                    ET.SubElement(root,"poster_username").text=poster_username
+                except:
+                    pass
+                try:
+                    post_link=submission.permalink
+                    ET.SubElement(root,"post_link").text=post_link
+                except:
+                    pass
+                try:
+                    post_subreddit=submission.subreddit.display_name
+                    ET.SubElement(root,"post_subreddit").text=post_subreddit
+                except:
+                    pass
+                try:
+                    if not submission.edited:
+                        post_time=time.ctime(submission.created)
+                    else:
+                        post_time=time.ctime(submission.edited)
+                    ET.SubElement(root,"post_time").text=post_time
+                except:
+                    pass
+                try:
+                    post_score=submission.score
+                    ET.SubElement(root,"post_score").text=str(post_score)
+                except:
+                    pass
+                try:
+                    post_title=submission.title
+                    ET.SubElement(root,"post_title").text=post_title
+                except:
+                    pass
+                try:
+                    post_upvote_ratio=submission.upvote_ratio
+                    ET.SubElement(root,"post_upvote_ratio").text=str(post_upvote_ratio)
+                except:
+                    pass
+                try:
+                    post_body=submission.selftext
+                    ET.SubElement(root,"post_body").text=post_body
+                except:
+                    pass
+            
+                submission.comments.replace_more(limit=256)
+            
+                for comment in submission.comments:
+                    if comment.stickied or isinstance(comment, MoreComments):
+                        continue
+                    generated=generate_tree(comment,depth_limit)
+                    if not generated is None:
+                        root.insert(-1,generated)
+                    
+                tree = ET.ElementTree(root)
+                tree.write(os.path.join(saving_dir,"conversations",subm_id+".xml"))
+                
+                subm_id=file.readline().strip()
+            file.close()
+            
+        
+def valid_dir(argument):
+    directory=str(argument)
+    if not os.path.isdir(directory):
+        msg="Choose a valid directory. You entered: %s" %directory
+        raise argparse.ArgumentTypeError(msg)
+    return directory
+
+def positive_int(argument):
+    num=int(argument)
+    if num<1:
+        msg="Parameter must be a positive number. You entered: %s" %argument
+        raise argparse.ArgumentTypeError(msg)
+    return num
+
+
 
 if __name__=='__main__':
-    account_num=7
+    parser = argparse.ArgumentParser(description='Scrapes Reddit comments as conversations', formatter_class=RawTextHelpFormatter)
+    parser.add_argument('credentials_dir',help='directory for reddit credentials', type=valid_dir)
+    parser.add_argument('saving_dir',help='directory for saving collected data', type=valid_dir)
+    parser.add_argument('num_workers',help='number of reddit accounts to use for scraping', type=positive_int)
+    parser.add_argument('depth_limit',help='depth limit for collecting conversations', type=positive_int)
+
+    args = parser.parse_args()
+    if args.num_workers<1:
+        raise argparse.ArgumentTypeError("Number of workers must be a positive number.")
+        
+    possible_workers=len(glob.glob(os.path.join(args.credentials_dir,"*.json")))
+    if not possible_workers:
+        raise argparse.ArgumentTypeError("No json credentials in the credentials directory")
+    
+    num_workers=min(args.num_workers, possible_workers)
+    
     manager=Manager()
     
-    if os.path.isfile("submission_list.txt"):
-        with open("submission_list.txt","r") as file:
-            submission_list=file.read().split('\n')
-        print('Read Submission List')
-        mlist=manager.list(submission_list)
-    else:
-        print('Generating Submission List')
-        subreddits=retrieve_subreddit_list()
-        subreddit_list=manager.list(subreddits)
-        mlist=manager.list()
-        processes=[]
-        for cred_id in range(account_num):
-            p=Process(target=list_subm,args=[cred_id,subreddit_list,mlist])
-            processes.append(p)
-            p.start()
+    sub_list_dir=os.path.join(args.saving_dir,"submissions")
+    os.makedirs(sub_list_dir, exist_ok=True)
+    subreddits=retrieve_subreddit_list()
+    subreddit_list=manager.list(subreddits[::-1])
+    cred_jsons=glob.glob(os.path.join(args.credentials_dir,"*.json"))[:num_workers]
 
-        while any([p.is_alive() for p in processes]):
-            time.sleep(60)
-
-        [p.join() for p in processes]
-        with open("submission_list.txt","w") as file:
-            file.write('\n'.join(list(subreddit_list)))
-        
+    # Submission listing for each subreddit started
     
     processes=[]
-    for cred_id in range(account_num):
-        p=Process(target=explore_submission,args=[cred_id,mlist])
+    for json_loc in cred_jsons:
+        p=Process(target=subm_from_subreddit,args=[subreddit_list,sub_list_dir,json_loc])
         processes.append(p)
         p.start()
-    [p.join() for p in processes]
         
+    while any([p.is_alive() for p in processes]):
+        time.sleep(60)
+
+    [p.join() for p in processes]
     
+    # Submission Listing Complete
+        
+    conv_dir=os.path.join(args.saving_dir,"conversations")
+    os.makedirs(conv_dir, exist_ok=True)
+    subreddits=retrieve_subreddit_list()
+    subreddit_list=manager.list(subreddits[::-1])
+    
+    for json_loc in cred_jsons:
+        p=Process(target=save_convs,args=[subreddit_list,json_loc,args.saving_dir,args.depth_limit])
+        processes.append(p)
+        p.start()
+        
+    while any([p.is_alive() for p in processes]):
+        time.sleep(60)
+
+    [p.join() for p in processes]
+
