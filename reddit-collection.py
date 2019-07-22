@@ -17,7 +17,28 @@ import glob
 from multiprocessing import Process, Manager
 import argparse
 from argparse import RawTextHelpFormatter
+from prawcore import ResponseException
 
+def valid_creds(json_loc_list):
+    valid_locs=[]
+    for json_loc in json_loc_list:
+        with open(json_loc, "r") as file:
+            creds = json.load(file)
+        
+        reddit = praw.Reddit(client_id=creds['client_id'],
+                         client_secret=creds['client_secret'],
+                         user_agent=creds['user_agent'],
+                         username=creds['username'],
+                         password=creds['password'])
+        
+        submission=reddit.submission(id='39bpam')
+        
+        try:
+            submission.author
+            valid_locs.append(json_loc)
+        except ResponseException:
+            pass
+    return valid_locs
 
 def single_node(comment):
     sub_tree=ET.Element("response")
@@ -104,6 +125,97 @@ def retrieve_subreddit_list():
     
     return subreddits
 
+def explore_submission(json_loc,mlist,depth_limit):
+    while len(mlist):
+        subm_id=mlist.pop()
+        print(subm_id)
+        with open(json_loc, "r") as file:
+            creds = json.load(file)
+    
+        reddit = praw.Reddit(client_id=creds['client_id'],
+                         client_secret=creds['client_secret'],
+                         user_agent=creds['user_agent'],
+                         username=creds['username'],
+                         password=creds['password'])
+        
+        submission=reddit.submission(id=subm_id)
+        
+        root = ET.Element("submission")
+        try:
+            author=submission.author
+            poster_username=author.name
+            ET.SubElement(root,"poster_username").text=poster_username
+        except:
+            pass
+        try:
+            post_link=submission.permalink
+            ET.SubElement(root,"post_link").text=post_link
+        except:
+            pass
+        try:
+            post_subreddit=submission.subreddit.display_name
+            ET.SubElement(root,"post_subreddit").text=post_subreddit
+        except:
+            pass
+        try:
+            if not submission.edited:
+                post_time=time.ctime(submission.created)
+            else:
+                post_time=time.ctime(submission.edited)
+            ET.SubElement(root,"post_time").text=post_time
+        except:
+            pass
+        try:
+            post_score=submission.score
+            ET.SubElement(root,"post_score").text=str(post_score)
+        except:
+            pass
+        try:
+            post_title=submission.title
+            ET.SubElement(root,"post_title").text=post_title
+        except:
+            pass
+        try:
+            post_upvote_ratio=submission.upvote_ratio
+            ET.SubElement(root,"post_upvote_ratio").text=str(post_upvote_ratio)
+        except:
+            pass
+        try:
+            post_body=submission.selftext
+            ET.SubElement(root,"post_body").text=post_body
+        except:
+            pass
+    
+        submission.comments.replace_more(limit=1024)
+        
+        for comment in submission.comments:
+            if comment.stickied or isinstance(comment, MoreComments):
+                continue
+            generated=generate_tree(comment,depth_limit)
+            if not generated is None:
+                root.insert(-1,generated)
+            
+        tree = ET.ElementTree(root)
+        tree.write(submission.id+".xml")
+
+def list_subm(json_loc,subreddit_list,mlist):
+    while len(subreddit_list):
+        subr=subreddit_list.pop()
+        print(subr)
+        with open(json_loc, "r") as file:
+            creds = json.load(file)
+    
+        reddit = praw.Reddit(client_id=creds['client_id'],
+                         client_secret=creds['client_secret'],
+                         user_agent=creds['user_agent'],
+                         username=creds['username'],
+                         password=creds['password'])
+        
+        subreddit = reddit.subreddit(subr)
+        top_subreddit = subreddit.top(limit=None)
+        for submission in top_subreddit:
+            mlist.append(submission)
+                
 def subm_from_subreddit(subreddit_list,sub_list_dir,json_loc):
     while len(subreddit_list):
         subreddit=subreddit_list.pop()
@@ -205,7 +317,7 @@ def save_convs(subreddit_list,json_loc,saving_dir,depth_limit):
                 tree.write(os.path.join(saving_dir,"conversations",subm_id+".xml"))
                 
                 subm_id=file.readline().strip()
-            file.close()
+        file.close()
             
         
 def valid_dir(argument):
@@ -222,8 +334,6 @@ def positive_int(argument):
         raise argparse.ArgumentTypeError(msg)
     return num
 
-
-
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='Scrapes Reddit comments as conversations', formatter_class=RawTextHelpFormatter)
     parser.add_argument('credentials_dir',help='directory for reddit credentials', type=valid_dir)
@@ -234,12 +344,12 @@ if __name__=='__main__':
     args = parser.parse_args()
     if args.num_workers<1:
         raise argparse.ArgumentTypeError("Number of workers must be a positive number.")
-        
-    possible_workers=len(glob.glob(os.path.join(args.credentials_dir,"*.json")))
-    if not possible_workers:
-        raise argparse.ArgumentTypeError("No json credentials in the credentials directory")
     
-    num_workers=min(args.num_workers, possible_workers)
+    red_creds=valid_creds(glob.glob(os.path.join(args.credentials_dir,"*.json")))
+    if not len(red_creds):
+        raise argparse.ArgumentTypeError("No valid credentials in the credentials directory")
+    print("{} valid reddit credentials in the credentials directory".format(len(red_creds)))
+    num_workers=min(args.num_workers, len(red_creds))
     
     manager=Manager()
     
@@ -247,7 +357,7 @@ if __name__=='__main__':
     os.makedirs(sub_list_dir, exist_ok=True)
     subreddits=retrieve_subreddit_list()
     subreddit_list=manager.list(subreddits[::-1])
-    cred_jsons=glob.glob(os.path.join(args.credentials_dir,"*.json"))[:num_workers]
+    cred_jsons=red_creds[:num_workers]
 
     # Submission listing for each subreddit started
     
@@ -278,4 +388,4 @@ if __name__=='__main__':
         time.sleep(60)
 
     [p.join() for p in processes]
-
+    
